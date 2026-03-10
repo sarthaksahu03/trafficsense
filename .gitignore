@@ -1,0 +1,11 @@
+*.pt
+__pycache__/
+runs/
+output/
+output_videos/
+output_images/
+license_data/
+sample_input/
+*.mp4
+*.jpg
+*.png
