@@ -7,24 +7,12 @@ from collections import defaultdict
 from ultralytics import YOLO
 import easyocr
 import re
-
-import cv2
-import csv
-import os
-import numpy as np
-import time
-from collections import defaultdict
-from ultralytics import YOLO
-import easyocr
-import re
-
-# Classes mapped to indices (COCO Dataset)
-# 2: car, 3: motorcycle, 5: bus, 7: truck
+# COCO definitions
 VEHICLE_CLASSES = [2, 3, 5, 7]
 
 class ViewTransformer:
     """
-    Handles the perspective transformation from the camera view to a bird's eye view.
+    Computes bird's-eye view planar mapping from perspective camera arrays explicitly deriving 2D speed metrics.
     """
     def __init__(self, source: np.ndarray, target_width: float, target_height: float):
         source = source.astype(np.float32)
@@ -77,8 +65,7 @@ class SpeedDetector:
 
     def process_video(self):
         """
-        Generator that processes the video frame by frame.
-        Yields a dictionary with the current frame and violation data.
+        Yields context dictionaries per frame bridging async GUI processing off the blocking YOLO execution loop.
         """
         self.is_running = True
         
@@ -246,7 +233,7 @@ class SpeedDetector:
             out.write(frame)
             frame_count += 1
             
-            # Yield frame for UI update
+            # Buffer layout required by async Dashboard handler
             yield {
                 "frame": frame,
                 "frame_count": frame_count,

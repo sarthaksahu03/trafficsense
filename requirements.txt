@@ -1,6 +1,8 @@
-customtkinter
-Pillow
-opencv-python
-numpy
-ultralytics
-easyocr
+numpy==1.26.4
+opencv-python>=4.8.0
+Pillow>=10.0.0
+customtkinter>=5.2.2
+ultralytics>=8.1.0
+easyocr>=1.7.1
+torch>=2.0.0
+torchvision>=0.15.0
