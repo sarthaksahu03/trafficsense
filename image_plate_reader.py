@@ -3,18 +3,18 @@ import easyocr
 import cv2
 import re
 
-# Load YOLO model
+# Load the plate detector
 model = YOLO("best.pt")
 
-# Initialize OCR
+# Set up OCR
 reader = easyocr.Reader(['en'], gpu=False)
 
-# Read image
+# Read the test image
 img = cv2.imread("test.jpg")
 if img is None:
     raise IOError("❌ Cannot read image")
 
-# Run YOLO detection
+# Run plate detection
 results = model(img, conf=0.25, imgsz=640)
 
 def clean_text(text):
@@ -30,11 +30,11 @@ for r in results:
         if plate.size == 0:
             continue
 
-        # Preprocess for OCR
+        # Clean the crop a bit before OCR
         gray = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY)
         gray = cv2.bilateralFilter(gray, 11, 17, 17)
 
-        # OCR
+        # Read text from the crop
         ocr_result = reader.readtext(
             gray,
             allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
@@ -43,10 +43,10 @@ for r in results:
 
         plate_text = clean_text("".join(ocr_result))
 
-        # Draw bounding box
+        # Draw the detection
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        # Draw text
+        # Draw the recognized plate text
         if plate_text:
             cv2.putText(
                 img,
@@ -58,7 +58,7 @@ for r in results:
                 2
             )
 
-# Save output image
+# Save the annotated result
 cv2.imwrite("output_image.jpg", img)
 
 print("✅ Done!")

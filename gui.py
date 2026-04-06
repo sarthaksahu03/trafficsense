@@ -5,7 +5,7 @@ import threading
 import os
 import numpy as np
 
-# Import our refactored modules
+# Local project modules
 from get_coordinates import run_calibration
 from speed_detection import SpeedDetector
 from red_light import RedLightSystem
@@ -19,14 +19,14 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # --- Window Setup ---
+        # Main window setup
         self.title("ALPR & Speed/Red Light Detection System")
         self.geometry("1200x800")
         
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
 
-        # Execution State Handlers
+        # Runtime state
         self.video_path = None
         self.output_dir = os.path.join(os.getcwd(), "output")
         self.source_points = None
@@ -37,7 +37,7 @@ class App(ctk.CTk):
         self.processing_thread = None
         self.current_mode = "Speed"
 
-        # Frame initialization mappings
+        # Build the initial layout
         self._build_sidebar()
         self._build_main_view()
         self.change_mode("Speed")
@@ -50,7 +50,7 @@ class App(ctk.CTk):
         self.logo_label = ctk.CTkLabel(self.sidebar, text="System Setup", font=ctk.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
         
-        # Mode Switcher
+        # Mode switcher
         self.seg_button = ctk.CTkSegmentedButton(self.sidebar, values=["Speed", "Red Light"], command=self.change_mode)
         self.seg_button.grid(row=1, column=0, padx=20, pady=(0, 10))
         self.seg_button.set("Speed")
@@ -65,7 +65,7 @@ class App(ctk.CTk):
         self.lbl_output_path = ctk.CTkLabel(self.sidebar, text=f"Output: {self.output_dir}", text_color="gray", wraplength=250)
         self.lbl_output_path.grid(row=5, column=0, padx=20, pady=(0, 10))
 
-        # Speed Settings
+        # Speed controls
         self.lbl_speed_limit = ctk.CTkLabel(self.sidebar, text="Speed Limit (km/h): 40")
         self.slider_speed_limit = ctk.CTkSlider(self.sidebar, from_=10, to=150, number_of_steps=140, command=self.update_speed_label)
         self.slider_speed_limit.set(40)
@@ -74,19 +74,19 @@ class App(ctk.CTk):
         self.slider_max_speed = ctk.CTkSlider(self.sidebar, from_=50, to=300, number_of_steps=250, command=self.update_max_speed_label)
         self.slider_max_speed.set(200)
 
-        # Actions
+        # Calibration actions
         self.btn_calibrate = ctk.CTkButton(self.sidebar, text="Calibrate Speed ROI", command=self.calibrate_roi, fg_color="orange", hover_color="#c97e00")
         
         self.btn_calibrate_sl = ctk.CTkButton(self.sidebar, text="Calibrate Stop Line", command=self.calibrate_stop_line, fg_color="orange", hover_color="#c97e00")
         
         self.btn_calibrate_tl = ctk.CTkButton(self.sidebar, text="Calibrate TL ROI", command=self.calibrate_tl_roi, fg_color="orange", hover_color="#c97e00")
         
-        # We will grid these conditionally
+        # These buttons are shown based on the selected mode
         
         self.btn_start = ctk.CTkButton(self.sidebar, text="Start Processing", command=self.toggle_processing, fg_color="green", hover_color="#006400", state="disabled")
         self.btn_start.grid(row=13, column=0, padx=20, pady=10)
         
-        # System Logs
+        # System log
         self.sys_log = ctk.CTkTextbox(self.sidebar, height=100)
         self.sys_log.grid(row=14, column=0, padx=20, pady=10, sticky="nsew")
         self.sys_log.insert("end", "System Initialized.\n")
@@ -127,7 +127,7 @@ class App(ctk.CTk):
         self.dashboard = ViolationDashboard(self.main_frame)
         self.dashboard.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
 
-    # Tkinter System Signal Callbacks
+    # UI event handlers
     def select_video(self):
         filepath = ctk.filedialog.askopenfilename(
             title="Select Video",

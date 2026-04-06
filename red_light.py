@@ -10,7 +10,7 @@ import re
 from image_utils import save_violation_crops
 from violation_logger import ViolationLogger
 
-# COCO mapping
+# COCO class IDs we treat as vehicles
 VEHICLE_CLASSES = [2, 3, 5, 7]
 
 def clean_text(text):
@@ -38,14 +38,14 @@ class TrafficLightDetector:
             
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         
-        # Red range
+        # Red mask
         lower_red1, upper_red1 = np.array([0, 100, 100]), np.array([10, 255, 255])
         lower_red2, upper_red2 = np.array([160, 100, 100]), np.array([180, 255, 255])
         mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
         mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
         mask_red = mask_red1 + mask_red2
         
-        # Green range
+        # Green mask
         lower_green, upper_green = np.array([40, 50, 50]), np.array([90, 255, 255])
         mask_green = cv2.inRange(hsv, lower_green, upper_green)
         
@@ -85,7 +85,16 @@ class PlateReader:
                 plate_crop = vehicle_crop[py1:py2, px1:px2]
                 
                 if plate_crop.size > 0:
+                    h, w = plate_crop.shape[:2]
+                    if w < 30 or h < 10:
+                        continue
+                        
                     gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                    
+                    # Skip OCR on weak plate crops
+                    if cv2.Laplacian(gray, cv2.CV_64F).var() < 50:
+                        continue
+
                     gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
                     gray = cv2.GaussianBlur(gray, (5, 5), 0)
                     _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -94,7 +103,8 @@ class PlateReader:
                     
                     for (_, text, conf) in ocr_results:
                         cleaned = clean_text(text)
-                        if is_valid_plate(cleaned) and conf > best_conf:
+                        # Keep the strongest plate read seen so far
+                        if is_valid_plate(cleaned) and conf > 0.4 and conf > best_conf:
                             best_conf = conf
                             plate_text_disp = cleaned
                             best_plate_crop = plate_crop.copy()
@@ -120,8 +130,7 @@ class RedLightSystem:
 
     def process_video(self):
         """
-        Primary engine loop mapping YOLO bounds to physical crossing heuristics.
-        Execution context bridges iteratively into `yield` buffers handling Tkinter thread locking implicitly.
+        Run the red-light detection loop and yield frame updates for the GUI.
         """
         self.is_running = True
         
@@ -129,7 +138,7 @@ class RedLightSystem:
         output_dir_violation = os.path.join(self.output_dir, "redlight_violations")
         output_video_path = os.path.join(self.output_dir, f"{video_name}_redlight_output.mp4")
         
-        # Init logger
+        # Keep one logger per run
         self.logger = ViolationLogger(self.output_dir, video_name)
 
         cap = cv2.VideoCapture(self.video_path)
@@ -146,7 +155,7 @@ class RedLightSystem:
         out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
 
         track_history = defaultdict(list)
-        self.violated_records = {} # Map track_id -> dict reference
+        self.violated_records = {}  # track_id -> logged violation record
         
         frame_count = 0
 
@@ -160,12 +169,12 @@ class RedLightSystem:
             light_state = self.tl_detector.get_state(frame)
             state_color = (0, 0, 255) if light_state == "RED" else ((0, 255, 0) if light_state == "GREEN" else (0, 255, 255))
             
-            # Renders traffic state explicitly bounding the fixed calibration node bounds
+            # Draw the calibrated traffic-light region and current state
             tx1, ty1, tx2, ty2 = self.traffic_light_roi
             cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), state_color, 2)
             cv2.putText(frame, f"TL: {light_state}", (tx1, ty1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, state_color, 2)
             
-            # Anchor evaluation segment bounds
+            # Draw the calibrated stop line
             sl_pt1, sl_pt2 = self.stop_line_pts
             cv2.line(frame, sl_pt1, sl_pt2, (0, 0, 255), 3)
 
@@ -178,7 +187,7 @@ class RedLightSystem:
                 for i, track_id in enumerate(track_ids):
                     x1, y1, x2, y2 = map(int, boxes[i])
                     xc = int((x1 + x2) / 2)
-                    yc = int((y1 + y2) / 2) # Use center
+                    yc = int((y1 + y2) / 2)  # Track the box center
                     
                     current_pos = (xc, yc)
                     
@@ -199,7 +208,7 @@ class RedLightSystem:
                         color = (0, 0, 255)
                         label += " VIOLATOR"
                         
-                        # Attempt refinement if plate OCR confidence is low
+                        # Try again later if the saved plate read is still weak
                         v_info = self.violated_records[track_id]
                         if v_info.get("conf", 0.0) < 0.8:
                             vehicle_crop = frame[max(0, y1):min(height, y2), max(0, x1):min(width, x2)]
@@ -208,13 +217,13 @@ class RedLightSystem:
                             if conf > v_info.get("conf", 0.0):
                                 veh_path, plate_path = save_violation_crops(output_dir_violation, track_id, plate_text, vehicle_crop, plate_crop)
                                 
-                                # By-reference dictionary mutations inherently cascade to active GUI modal threads
+                                # Update the cached record in place so the UI sees the better evidence
                                 v_info["plate"] = plate_text
                                 v_info["vehicle_img"] = veh_path
                                 v_info["plate_img"] = plate_path
                                 v_info["conf"] = conf
                                 
-                                # Instruct logger to rewrite CSV memory mapping ensuring persistent data validation
+                                # Persist the improved plate and image paths
                                 self.logger.update_violation(track_id, plate_text, veh_path, plate_path)
                                 print(f"Upgraded evidence for ID: {track_id}, new plate: {plate_text}")
                                 
@@ -241,14 +250,14 @@ class RedLightSystem:
                             self.violated_records[track_id] = violation_info
                             new_violations.append(violation_info)
 
-                    # Draw rect and label
+                    # Draw the tracked vehicle
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             out.write(frame)
             frame_count += 1
             
-            # Flush buffer array context into main process loop
+            # Hand the latest frame and violations back to the GUI loop
             yield {
                 "frame": frame,
                 "frame_count": frame_count,
@@ -260,11 +269,11 @@ class RedLightSystem:
         print("Processing complete!")
 
 if __name__ == "__main__":
-    # Test block
+    # Quick local test
     VIDEO_PATH = "sample_input/test_video_1.mp4"
     OUTPUT_DIR = "output"
     
-    # Configure these according to the test video
+    # Update these for the clip you're testing with
     STOP_LINE_PTS = ((100, 600), (1100, 600)) 
     TRAFFIC_LIGHT_ROI = (600, 50, 650, 150)
     

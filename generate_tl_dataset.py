@@ -4,52 +4,58 @@ import argparse
 import numpy as np
 
 def draw_traffic_light(frame, x, y, w, h, state):
-    """Renders active visual states inside defined structural boundings."""
-    # Background casing (dark gray)
+    """Draw a simple traffic light overlay inside the given box."""
+    if w <= 0 or h <= 0:
+        return
+        
+    # Traffic light housing
     cv2.rectangle(frame, (x, y), (x + w, y + h), (40, 40, 40), -1)
     
-    # Calculate radius to fit nicely inside a third of the height
-    radius = int(min(w, h / 3) * 0.4)
+    # Split the box into three stacked light sections
+    section_h = h / 3
+    # Keep the circles inside the box
+    max_r_w = w * 0.4
+    max_r_h = section_h * 0.4
+    radius = max(1, int(min(max_r_w, max_r_h)))
     
-    # Centers for the 3 lights
+    # Circle centers
     cx = x + w // 2
-    cy_red = y + h // 6
-    cy_yellow = y + h // 2
-    cy_green = y + 5 * h // 6
+    cy_red = y + int(section_h * 0.5)
+    cy_yellow = y + int(section_h * 1.5)
+    cy_green = y + int(section_h * 2.5)
     
-    # Active Colors (BGR format in OpenCV)
+    # Active colors in OpenCV's BGR format
     COLOR_RED_ACTIVE = (0, 0, 255)
     COLOR_YELLOW_ACTIVE = (0, 255, 255)
     COLOR_GREEN_ACTIVE = (0, 255, 0)
     
-    # Dim Color for inactive lights
+    # Color for inactive lights
     COLOR_OFF = (60, 60, 60)
     
-    # Determine colors based on state
+    # Pick the active light
     r_color = COLOR_RED_ACTIVE if state == 'RED' else COLOR_OFF
     y_color = COLOR_YELLOW_ACTIVE if state == 'YELLOW' else COLOR_OFF
     g_color = COLOR_GREEN_ACTIVE if state == 'GREEN' else COLOR_OFF
     
-    # Draw lights
+    # Scale the outline with the light size
+    thickness = max(1, int(radius * 0.15))
+    
+    # Draw the three lights
     cv2.circle(frame, (cx, cy_red), radius, r_color, -1)
     cv2.circle(frame, (cx, cy_yellow), radius, y_color, -1)
     cv2.circle(frame, (cx, cy_green), radius, g_color, -1)
     
-    # Draw outline for better visibility
-    cv2.circle(frame, (cx, cy_red), radius, (20, 20, 20), 2)
-    cv2.circle(frame, (cx, cy_yellow), radius, (20, 20, 20), 2)
-    cv2.circle(frame, (cx, cy_green), radius, (20, 20, 20), 2)
-    
-    # Overlay state text right above the box
-    text_color = r_color if state == 'RED' else (y_color if state == 'YELLOW' else g_color)
-    cv2.putText(frame, state, (x, max(0, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+    # Add a subtle outline
+    cv2.circle(frame, (cx, cy_red), radius, (20, 20, 20), thickness)
+    cv2.circle(frame, (cx, cy_yellow), radius, (20, 20, 20), thickness)
+    cv2.circle(frame, (cx, cy_green), radius, (20, 20, 20), thickness)
 
 def generate_dataset(video_path, output_path):
     if not os.path.exists(video_path):
         print(f"Error: Video '{video_path}' not found.")
         return
 
-    # Use the unified calibration logic to get 2 points
+    # Reuse the regular calibration helper to pick the box corners
     from get_coordinates import run_calibration
     
     print("Opening calibration window to define Traffic Light Box.")
@@ -67,14 +73,13 @@ def generate_dataset(video_path, output_path):
     x, y = int(min(x1, x2)), int(min(y1, y2))
     w, h = int(abs(x2 - x1)), int(abs(y2 - y1))
     
-    # Fallback to defaults if the box is unreasonably squashed
+    # Warn on tiny selections, but still allow them
     if w <= 5 or h <= 5:
-        print("Selection too small, defaulting to standard size (w=40, h=120).")
-        w, h = 40, 120
+        print("Warning: Selection is very small, but proceeding as requested.")
 
     print(f"Traffic Light Box Coordinates: x={x}, y={y}, w={w}, h={h}")
 
-    # Open video for processing loop
+    # Open the source video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print("Error: Could not open video file.")
@@ -89,7 +94,7 @@ def generate_dataset(video_path, output_path):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Timing logic
+    # Basic signal timing
     green_frames = int(5 * fps)
     yellow_frames = int(2 * fps)
     red_frames = int(5 * fps)
@@ -141,8 +146,8 @@ def generate_dataset(video_path, output_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synthetic Traffic Light Dataset Generator")
-    parser.add_argument("--input", "-i", type=str, default="sample_input/test_video_1.mp4", help="Input video file path")
-    parser.add_argument("--output", "-o", type=str, default="output_with_signal.mp4", help="Output video file path")
+    parser.add_argument("--input", "-i", type=str, default="/home/burner/coding/yolo_test/sample_input/14326971_2560_1440_60fps.mp4", help="Input video file path")
+    parser.add_argument("--output", "-o", type=str, default="output_with_signal_2.mp4", help="Output video file path")
     
     args = parser.parse_args()
     generate_dataset(args.input, args.output)

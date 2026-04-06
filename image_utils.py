@@ -5,7 +5,7 @@ import customtkinter as ctk
 
 def save_violation_crops(output_dir, vehicle_id, plate_text, vehicle_crop, plate_crop=None):
     """
-    Saves the cropped vehicle and plate images to the specified directory.
+    Save the cropped vehicle and plate images for a violation.
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -25,14 +25,14 @@ def save_violation_crops(output_dir, vehicle_id, plate_text, vehicle_crop, plate
 
 def load_image_for_gui(image_path, size=(300, 300)):
     """
-    Loads an image from disk and scales it efficiently for CustomTkinter rendering.
+    Load an image from disk and scale it for the GUI.
     """
     if not image_path or not os.path.exists(image_path):
         return None
         
     try:
         img = Image.open(image_path)
-        # Resize while maintaining aspect ratio
+        # Keep the original aspect ratio
         img.thumbnail(size, Image.Resampling.LANCZOS)
         
         ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)

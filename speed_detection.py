@@ -7,12 +7,12 @@ from collections import defaultdict
 from ultralytics import YOLO
 import easyocr
 import re
-# COCO definitions
+# COCO class IDs we treat as vehicles
 VEHICLE_CLASSES = [2, 3, 5, 7]
 
 class ViewTransformer:
     """
-    Computes bird's-eye view planar mapping from perspective camera arrays explicitly deriving 2D speed metrics.
+    Maps points from the camera view into a top-down plane so speed can be estimated more consistently.
     """
     def __init__(self, source: np.ndarray, target_width: float, target_height: float):
         source = source.astype(np.float32)
@@ -47,7 +47,7 @@ class SpeedDetector:
         self.speed_limit = speed_limit
         self.max_speed_threshold = max_speed_threshold
         
-        # Real-world dimensions for ROI
+        # Approximate real-world size of the calibrated region
         self.target_width = 20
         self.target_height = 50
         
@@ -65,7 +65,7 @@ class SpeedDetector:
 
     def process_video(self):
         """
-        Yields context dictionaries per frame bridging async GUI processing off the blocking YOLO execution loop.
+        Process the video frame by frame and yield data the GUI can consume.
         """
         self.is_running = True
         
@@ -111,7 +111,7 @@ class SpeedDetector:
                 
             new_violations = []
 
-            results = self.vehicle_model.track(frame, persist=True, classes=VEHICLE_CLASSES, conf=0.3, verbose=False)
+            results = self.vehicle_model.track(frame, persist=True, classes=VEHICLE_CLASSES, conf=0.3, verbose=False, device='cpu')
             
             if results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -186,7 +186,15 @@ class SpeedDetector:
                                             plate_crop = vehicle_crop[py1:py2, px1:px2]
                                             
                                             if plate_crop.size > 0:
+                                                h, w = plate_crop.shape[:2]
+                                                if w < 30 or h < 10: continue
+                                                
                                                 gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                                                
+                                                # Skip OCR on blurry plate crops
+                                                if cv2.Laplacian(gray, cv2.CV_64F).var() < 50:
+                                                    continue
+
                                                 gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
                                                 gray = cv2.GaussianBlur(gray, (5, 5), 0)
                                                 _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -195,12 +203,13 @@ class SpeedDetector:
                                                 
                                                 for (_, text, conf) in ocr_results:
                                                     cleaned = clean_text(text)
-                                                    if is_valid_plate(cleaned) and conf > best_conf:
+                                                    # Only keep plate reads that clear a basic confidence bar
+                                                    if is_valid_plate(cleaned) and conf > 0.4 and conf > best_conf:
                                                         best_conf = conf
                                                         plate_text_disp = cleaned
                                 
                                 csv_writer.writerow([track_id, f"{speed_disp:.2f}", frame_count, plate_text_disp])
-                                csv_file.flush() # Ensure it's written immediately
+                                csv_file.flush()  # Write each violation row immediately
                                 
                                 img_path = ""
                                 if vehicle_crop.size > 0:
@@ -233,7 +242,7 @@ class SpeedDetector:
             out.write(frame)
             frame_count += 1
             
-            # Buffer layout required by async Dashboard handler
+            # Keep the payload format simple for the GUI loop
             yield {
                 "frame": frame,
                 "frame_count": frame_count,
@@ -245,7 +254,7 @@ class SpeedDetector:
         csv_file.close()
 
 if __name__ == "__main__":
-    # Test block
+    # Quick local test
     VIDEO_PATH = "/home/burner/coding/yolo_test/sample_input/test_video_1.mp4"
     OUTPUT_DIR = "output"
     SOURCE_POINTS = np.array([[470, 257], [948, 270], [1274, 514], [334, 449]]).astype(np.float32)
