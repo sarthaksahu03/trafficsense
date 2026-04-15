@@ -33,7 +33,10 @@ class App(tk.Tk):
         self.processing_thread = None
         self.current_mode = tk.StringVar(value="Speed")
         self._photo_ref = None  # Keep a reference to the current frame image
+        self._last_frame_bgr = None
         self._violation_counter = 0
+        self._violation_iids_by_id = {}
+        self._plate_thumb_refs = {}
 
         self._setup_styles()
         self._build_ui()
@@ -73,7 +76,7 @@ class App(tk.Tk):
         # Table styling
         style.configure("Violations.Treeview",
                         font=("Segoe UI", 9),
-                        rowheight=24,
+                        rowheight=62,
                         background="#fff",
                         fieldbackground="#fff",
                         foreground="#333")
@@ -233,33 +236,41 @@ class App(tk.Tk):
         main = ttk.Frame(self.pane)
         self.pane.add(main, weight=1)
 
-        main.rowconfigure(0, weight=3)
-        main.rowconfigure(1, weight=1)
+        main.rowconfigure(0, weight=1)
         main.columnconfigure(0, weight=1)
 
+        self.playback_pane = ttk.PanedWindow(main, orient=tk.VERTICAL)
+        self.playback_pane.grid(row=0, column=0, sticky="nsew", padx=(4, 8), pady=(8, 6))
+
+        video_frame = ttk.Frame(self.playback_pane)
+        video_frame.rowconfigure(0, weight=1)
+        video_frame.columnconfigure(0, weight=1)
+        self.playback_pane.add(video_frame, weight=3)
+
         # Video preview
-        self.video_label = tk.Label(main, text="No video feed", bg="#1a1a1a",
+        self.video_label = tk.Label(video_frame, text="No video feed", bg="#1a1a1a",
                                     fg="#777", font=("Segoe UI", 11),
                                     relief="solid", bd=1)
-        self.video_label.grid(row=0, column=0, sticky="nsew", padx=(4, 8), pady=(8, 4))
+        self.video_label.grid(row=0, column=0, sticky="nsew")
+        self.video_label.bind("<Configure>", self._on_video_resize)
 
         # Violation list
-        table_frame = ttk.Frame(main)
-        table_frame.grid(row=1, column=0, sticky="nsew", padx=(4, 8), pady=(2, 6))
+        table_frame = ttk.Frame(self.playback_pane)
+        self.playback_pane.add(table_frame, weight=1)
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        cols = ("sno", "type", "plate", "timestamp")
-        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings",
+        cols = ("sno", "type", "timestamp")
+        self.tree = ttk.Treeview(table_frame, columns=cols, show=("tree", "headings"),
                                  style="Violations.Treeview", selectmode="browse")
+        self.tree.heading("#0", text="Plate")
         self.tree.heading("sno", text="#")
         self.tree.heading("type", text="Violation")
-        self.tree.heading("plate", text="Plate")
         self.tree.heading("timestamp", text="Time")
 
+        self.tree.column("#0", width=170, minwidth=140, stretch=False, anchor="center")
         self.tree.column("sno", width=36, minwidth=30, stretch=False, anchor="center")
         self.tree.column("type", width=160, minwidth=100)
-        self.tree.column("plate", width=110, minwidth=80)
         self.tree.column("timestamp", width=150, minwidth=100)
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -273,6 +284,7 @@ class App(tk.Tk):
 
         # Cache row data for the detail popup
         self._violation_data = {}
+        self.after(100, self._set_initial_playback_sash)
 
     def _build_statusbar(self):
         bar = ttk.Frame(self, style="StatusBar.TFrame")
@@ -385,6 +397,7 @@ class App(tk.Tk):
         self.is_processing = True
         self.btn_start.config(text="Stop", style="Stop.TButton")
         self.status_label.config(text="Processing...")
+        self._violation_iids_by_id.clear()
 
         mode = self.current_mode.get()
         if mode == "Speed":
@@ -430,6 +443,7 @@ class App(tk.Tk):
 
             frame = data["frame"]
             violations = data["new_violations"]
+            updated_violations = data.get("updated_violations", [])
 
             self.after(0, self._show_frame, frame)
 
@@ -441,16 +455,28 @@ class App(tk.Tk):
                         "type": f"Speeding ({v.get('speed', 0):.0f} km/h)",
                         "timestamp": time.strftime("%H:%M:%S"),
                         "plate": v.get("plate", "-"),
-                        "vehicle_img": v.get("image_path", ""),
-                        "plate_img": None,
+                        "vehicle_img": v.get("vehicle_img") or v.get("image_path", ""),
+                        "plate_img": v.get("plate_img"),
                     }
                 self.after(0, self._add_violation, v)
+
+            for v in updated_violations:
+                if mode != "Red Light":
+                    v = {
+                        "id": v.get("id", "-"),
+                        "type": f"Speeding ({v.get('speed', 0):.0f} km/h)",
+                        "plate": v.get("plate", "-"),
+                        "vehicle_img": v.get("vehicle_img") or v.get("image_path", ""),
+                        "plate_img": v.get("plate_img"),
+                    }
+                    self.after(0, self._update_violation, v)
 
         self.after(0, self._stop)
 
     # Video preview
 
     def _show_frame(self, frame_bgr):
+        self._last_frame_bgr = frame_bgr
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
         lw = self.video_label.winfo_width()
@@ -465,6 +491,15 @@ class App(tk.Tk):
         self.video_label.config(image=photo, text="")
         self._photo_ref = photo  # Keep Tk from dropping the image
 
+    def _on_video_resize(self, event=None):
+        if self._last_frame_bgr is not None:
+            self._show_frame(self._last_frame_bgr)
+
+    def _set_initial_playback_sash(self):
+        height = self.playback_pane.winfo_height()
+        if height > 400:
+            self.playback_pane.sashpos(0, int(height * 0.7))
+
     # Violation table
 
     def _add_violation(self, v):
@@ -472,55 +507,141 @@ class App(tk.Tk):
         sno = self._violation_counter
         tag = "oddrow" if sno % 2 else "evenrow"
 
+        plate_thumb = self._load_plate_thumb(v.get("plate_img"))
         iid = self.tree.insert("", "end", values=(
             sno,
             v.get("type", "Unknown"),
-            v.get("plate", "-"),
             v.get("timestamp", "-"),
-        ), tags=(tag,))
+        ), tags=(tag,), image=plate_thumb or "", text="" if plate_thumb else "No plate image")
 
         self._violation_data[iid] = v
+        if plate_thumb:
+            self._plate_thumb_refs[iid] = plate_thumb
+        if v.get("id", "-") != "-":
+            self._violation_iids_by_id[v["id"]] = iid
         self._log_to_sqlite(v)
+
+    def _update_violation(self, v):
+        iid = self._violation_iids_by_id.get(v.get("id"))
+        if not iid:
+            v.setdefault("timestamp", time.strftime("%H:%M:%S"))
+            self._add_violation(v)
+            return
+
+        existing = self._violation_data.get(iid, {})
+        existing.update({k: value for k, value in v.items() if value not in (None, "")})
+        self._violation_data[iid] = existing
+
+        current_values = list(self.tree.item(iid, "values"))
+        if len(current_values) >= 3:
+            current_values[1] = existing.get("type", current_values[1])
+            self.tree.item(iid, values=current_values)
+        plate_thumb = self._load_plate_thumb(existing.get("plate_img"))
+        if plate_thumb:
+            self._plate_thumb_refs[iid] = plate_thumb
+            self.tree.item(iid, image=plate_thumb, text="")
+        self._update_sqlite_violation(existing)
+
+    def _ensure_violations_schema(self, cursor):
+        cursor.execute('''CREATE TABLE IF NOT EXISTS violations 
+                         (id INTEGER PRIMARY KEY, plate_number TEXT, vehicle_type TEXT, 
+                          violation_type TEXT, speed REAL, timestamp TEXT, location TEXT, image_path TEXT,
+                          vehicle_id TEXT, plate_img_path TEXT)''')
+
+        cursor.execute("PRAGMA table_info(violations)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        if "vehicle_id" not in existing_columns:
+            cursor.execute("ALTER TABLE violations ADD COLUMN vehicle_id TEXT")
+        if "plate_img_path" not in existing_columns:
+            cursor.execute("ALTER TABLE violations ADD COLUMN plate_img_path TEXT")
+
+    def _normalize_sqlite_violation(self, v):
+        import time
+        import re
+
+        v_type_str = v.get("type", "")
+        speed = 0.0
+        v_type = "Unknown"
+
+        if "Speeding" in v_type_str:
+            v_type = "Speeding"
+            m = re.search(r'(\d+)', v_type_str)
+            if m:
+                speed = float(m.group(1))
+        elif "Red Light" in v_type_str or "Stop" in v_type_str:
+            v_type = "Red Light"
+        else:
+            v_type = v_type_str
+
+        ts = v.get("timestamp", "")
+        if len(ts) <= 8 and ts != "-":  # Time-only values need today's date
+            ts = f"{time.strftime('%Y-%m-%d')} {ts}"
+        elif ts == "-":
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        plate = v.get("plate", "Unknown")
+        if not plate or plate == "-":
+            plate = "Unknown"
+
+        vehicle_id = str(v.get("id", "")).strip()
+        if vehicle_id == "-":
+            vehicle_id = ""
+
+        return {
+            "vehicle_id": vehicle_id,
+            "plate": plate,
+            "vehicle_type": "Vehicle",
+            "violation_type": v_type,
+            "speed": speed,
+            "timestamp": ts,
+            "location": "System",
+            "vehicle_img": v.get("vehicle_img", ""),
+            "plate_img": v.get("plate_img", ""),
+        }
 
     def _log_to_sqlite(self, v):
         import sqlite3
-        import time
-        import re
         try:
             with sqlite3.connect("traffic.db") as conn:
                 c = conn.cursor()
-                c.execute('''CREATE TABLE IF NOT EXISTS violations 
-                             (id INTEGER PRIMARY KEY, plate_number TEXT, vehicle_type TEXT, 
-                              violation_type TEXT, speed REAL, timestamp TEXT, location TEXT, image_path TEXT)''')
-                
-                v_type_str = v.get("type", "")
-                speed = 0.0
-                v_type = "Unknown"
-                
-                if "Speeding" in v_type_str:
-                    v_type = "Speeding"
-                    m = re.search(r'(\d+)', v_type_str)
-                    if m: speed = float(m.group(1))
-                elif "Red Light" in v_type_str or "Stop" in v_type_str:
-                    v_type = "Red Light"
-                else:
-                    v_type = v_type_str
-                    
-                ts = v.get("timestamp", "")
-                if len(ts) <= 8 and ts != "-":  # Time-only values need today's date
-                    ts = f"{time.strftime('%Y-%m-%d')} {ts}"
-                elif ts == "-":
-                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-
-                plate = v.get("plate", "Unknown")
-                if not plate or plate == "-": plate = "Unknown"
+                self._ensure_violations_schema(c)
+                row = self._normalize_sqlite_violation(v)
                 
                 c.execute('''INSERT INTO violations 
-                             (plate_number, vehicle_type, violation_type, speed, timestamp, location, image_path)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)''', 
-                          (plate, "Vehicle", v_type, speed, ts, "System", v.get("vehicle_img", "")))
+                             (plate_number, vehicle_type, violation_type, speed, timestamp, location,
+                              image_path, vehicle_id, plate_img_path)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (row["plate"], row["vehicle_type"], row["violation_type"], row["speed"],
+                           row["timestamp"], row["location"], row["vehicle_img"], row["vehicle_id"],
+                           row["plate_img"]))
         except Exception as e:
             print(f"Error logging to SQLite: {e}")
+
+    def _update_sqlite_violation(self, v):
+        import sqlite3
+        try:
+            row = self._normalize_sqlite_violation(v)
+            if not row["vehicle_id"]:
+                return
+
+            with sqlite3.connect("traffic.db") as conn:
+                c = conn.cursor()
+                self._ensure_violations_schema(c)
+                c.execute('''
+                    UPDATE violations
+                    SET plate_number = ?,
+                        image_path = ?,
+                        plate_img_path = ?
+                    WHERE id = (
+                        SELECT id
+                        FROM violations
+                        WHERE vehicle_id = ?
+                        ORDER BY timestamp DESC, id DESC
+                        LIMIT 1
+                    )
+                ''', (row["plate"], row["vehicle_img"], row["plate_img"], row["vehicle_id"]))
+        except Exception as e:
+            print(f"Error updating SQLite violation: {e}")
 
     def _on_tree_double_click(self, event):
         sel = self.tree.selection()
@@ -574,10 +695,17 @@ class App(tk.Tk):
                  font=("Segoe UI", 11, "bold"), fg="#333").pack(anchor="w", pady=2)
         tk.Label(info, text=f"Time:  {v.get('timestamp', '-')}", bg="#f4f4f4",
                  font=("Segoe UI", 10), fg="#555").pack(anchor="w", pady=1)
-        tk.Label(info, text=f"Plate: {v.get('plate', '-')}", bg="#f4f4f4",
-                 font=("Segoe UI", 13, "bold"), fg="#2a5d8a").pack(anchor="w", pady=(6, 2))
-
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=(12, 10))
+
+    def _load_plate_thumb(self, path):
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            img = Image.open(path)
+            img.thumbnail((150, 52), Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
 
     def _load_popup_image(self, path, size):
         if not path or not os.path.exists(path):

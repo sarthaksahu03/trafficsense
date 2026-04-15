@@ -11,19 +11,22 @@ class ViolationDashboard(ctk.CTkFrame):
         # Header row
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-        self.header_frame.grid_columnconfigure((0,1,2,3), weight=1)
+        self.header_frame.grid_columnconfigure((0,1,2,3,4), weight=1)
         
         ctk.CTkLabel(self.header_frame, text="S.No", font=("Arial", 14, "bold")).grid(row=0, column=0)
         ctk.CTkLabel(self.header_frame, text="Type", font=("Arial", 14, "bold")).grid(row=0, column=1)
-        ctk.CTkLabel(self.header_frame, text="Timestamp", font=("Arial", 14, "bold")).grid(row=0, column=2)
-        ctk.CTkLabel(self.header_frame, text="Action", font=("Arial", 14, "bold")).grid(row=0, column=3)
+        ctk.CTkLabel(self.header_frame, text="Plate", font=("Arial", 14, "bold")).grid(row=0, column=2)
+        ctk.CTkLabel(self.header_frame, text="Timestamp", font=("Arial", 14, "bold")).grid(row=0, column=3)
+        ctk.CTkLabel(self.header_frame, text="Action", font=("Arial", 14, "bold")).grid(row=0, column=4)
         
         # Scrollable list of violations
         self.scroll_frame = ctk.CTkScrollableFrame(self)
         self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-        self.scroll_frame.grid_columnconfigure((0,1,2,3), weight=1)
+        self.scroll_frame.grid_columnconfigure((0,1,2,3,4), weight=1)
         
         self.row_count = 0
+        self.rows_by_vehicle_id = {}
+        self.row_widgets_by_vehicle_id = {}
 
     def add_violation_row(self, v_data):
         """Add one summary row to the dashboard."""
@@ -36,12 +39,40 @@ class ViolationDashboard(ctk.CTkFrame):
         ctk.CTkLabel(self.scroll_frame, text=str(v_data.get("s_no", "-"))).grid(row=row_id, column=0, pady=5)
         # Violation type
         ctk.CTkLabel(self.scroll_frame, text=v_data.get("type", "Unknown")).grid(row=row_id, column=1, pady=5)
+        plate_ctk = load_image_for_gui(v_data.get("plate_img"), size=(140, 58))
+        if plate_ctk:
+            plate_lbl = ctk.CTkLabel(self.scroll_frame, image=plate_ctk, text="")
+            plate_lbl.image = plate_ctk
+            plate_lbl.grid(row=row_id, column=2, pady=5, padx=5)
+        else:
+            plate_lbl = ctk.CTkLabel(self.scroll_frame, text="No plate image")
+            plate_lbl.grid(row=row_id, column=2, pady=5, padx=5)
         # Timestamp
-        ctk.CTkLabel(self.scroll_frame, text=v_data.get("timestamp", "-")).grid(row=row_id, column=2, pady=5)
+        ctk.CTkLabel(self.scroll_frame, text=v_data.get("timestamp", "-")).grid(row=row_id, column=3, pady=5)
         # Detail button
         btn = ctk.CTkButton(self.scroll_frame, text="View Details", 
                             command=lambda v=v_data: self.show_details_modal(v))
-        btn.grid(row=row_id, column=3, pady=5, padx=5)
+        btn.grid(row=row_id, column=4, pady=5, padx=5)
+
+        if v_data.get("id", "-") != "-":
+            self.rows_by_vehicle_id[v_data["id"]] = v_data
+            self.row_widgets_by_vehicle_id[v_data["id"]] = {"plate": plate_lbl}
+
+    def update_violation_row(self, v_data):
+        """Update stored details for an existing vehicle row."""
+        vehicle_id = v_data.get("id")
+        existing = self.rows_by_vehicle_id.get(vehicle_id)
+        if not existing:
+            self.add_violation_row(v_data)
+            return
+
+        existing.update({k: value for k, value in v_data.items() if value not in (None, "")})
+        widgets = self.row_widgets_by_vehicle_id.get(vehicle_id, {})
+        plate_lbl = widgets.get("plate")
+        plate_ctk = load_image_for_gui(existing.get("plate_img"), size=(140, 58))
+        if plate_lbl and plate_ctk:
+            plate_lbl.configure(image=plate_ctk, text="")
+            plate_lbl.image = plate_ctk
 
     def show_details_modal(self, v_data):
         modal = ctk.CTkToplevel(self)
@@ -80,7 +111,5 @@ class ViolationDashboard(ctk.CTkFrame):
         
         ctk.CTkLabel(info_frame, text=f"Violation Type: {v_data.get('type')}", font=("Arial", 16, "bold")).pack(pady=5)
         ctk.CTkLabel(info_frame, text=f"Timestamp: {v_data.get('timestamp')}", font=("Arial", 14)).pack(pady=5)
-        ctk.CTkLabel(info_frame, text=f"Extracted License Plate: {v_data.get('plate')}", font=("Arial", 20, "bold"), text_color="yellow").pack(pady=10)
-        
         close_btn = ctk.CTkButton(modal, text="Close", command=modal.destroy, fg_color="red", hover_color="#8b0000")
         close_btn.grid(row=2, column=0, columnspan=2, pady=20)

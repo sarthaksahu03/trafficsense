@@ -1,4 +1,5 @@
 import customtkinter as ctk
+import tkinter as tk
 from PIL import Image, ImageTk
 import cv2
 import threading
@@ -36,6 +37,7 @@ class App(ctk.CTk):
         self.detector = None
         self.processing_thread = None
         self.current_mode = "Speed"
+        self._last_frame_bgr = None
 
         # Build the initial layout
         self._build_sidebar()
@@ -117,15 +119,32 @@ class App(ctk.CTk):
     def _build_main_view(self):
         self.main_frame = ctk.CTkFrame(self, corner_radius=10)
         self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-        self.main_frame.grid_rowconfigure(0, weight=3)
-        self.main_frame.grid_rowconfigure(1, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
 
-        self.video_canvas = ctk.CTkLabel(self.main_frame, text="Video Feed", bg_color="black")
-        self.video_canvas.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.playback_pane = tk.PanedWindow(
+            self.main_frame,
+            orient=tk.VERTICAL,
+            sashwidth=8,
+            sashrelief=tk.RAISED,
+            bg="#2b2b2b",
+            bd=0,
+            showhandle=True,
+        )
+        self.playback_pane.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
-        self.dashboard = ViolationDashboard(self.main_frame)
-        self.dashboard.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        self.video_panel = ctk.CTkFrame(self.playback_pane, corner_radius=0)
+        self.video_panel.grid_rowconfigure(0, weight=1)
+        self.video_panel.grid_columnconfigure(0, weight=1)
+
+        self.video_canvas = ctk.CTkLabel(self.video_panel, text="Video Feed", bg_color="black")
+        self.video_canvas.grid(row=0, column=0, sticky="nsew")
+        self.video_canvas.bind("<Configure>", self._on_video_resize)
+
+        self.dashboard = ViolationDashboard(self.playback_pane)
+        self.playback_pane.add(self.video_panel, minsize=220, sticky="nsew", stretch="always")
+        self.playback_pane.add(self.dashboard, minsize=140, sticky="nsew")
+        self.after(100, self._set_initial_playback_sash)
 
     # UI event handlers
     def select_video(self):
@@ -253,6 +272,7 @@ class App(ctk.CTk):
                 
             frame = data['frame']
             violations = data['new_violations']
+            updated_violations = data.get('updated_violations', [])
             
             self.after(0, self._update_video_canvas, frame)
             
@@ -266,14 +286,26 @@ class App(ctk.CTk):
                         "type": f"Speeding ({v.get('speed', 0):.0f}km/h)",
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "plate": v.get('plate', '-'),
-                        "vehicle_img": v.get('image_path', ''),
-                        "plate_img": None
+                        "vehicle_img": v.get('vehicle_img') or v.get('image_path', ''),
+                        "plate_img": v.get('plate_img')
                     }
                     self.after(0, self.dashboard.add_violation_row, formatted_v)
+
+            for v in updated_violations:
+                if self.current_mode != "Red Light":
+                    formatted_v = {
+                        "id": v.get('id', '-'),
+                        "type": f"Speeding ({v.get('speed', 0):.0f}km/h)",
+                        "plate": v.get('plate', '-'),
+                        "vehicle_img": v.get('vehicle_img') or v.get('image_path', ''),
+                        "plate_img": v.get('plate_img')
+                    }
+                    self.after(0, self.dashboard.update_violation_row, formatted_v)
                 
         self.after(0, self._stop_processing)
 
     def _update_video_canvas(self, frame_bgr):
+        self._last_frame_bgr = frame_bgr
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         
         target_w = self.video_canvas.winfo_width()
@@ -289,6 +321,15 @@ class App(ctk.CTk):
         ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
         
         self.video_canvas.configure(image=ctk_img, text="")
+
+    def _on_video_resize(self, event=None):
+        if self._last_frame_bgr is not None:
+            self._update_video_canvas(self._last_frame_bgr)
+
+    def _set_initial_playback_sash(self):
+        height = self.playback_pane.winfo_height()
+        if height > 400:
+            self.playback_pane.sash_place(0, 0, int(height * 0.7))
 
     def log_message(self, message):
         self.sys_log.insert("end", message + "\n")
