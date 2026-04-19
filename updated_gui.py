@@ -11,6 +11,7 @@ from get_coordinates import run_calibration
 from speed_detection import SpeedDetector
 from red_light import RedLightSystem
 from analytics_page import AnalyticsDashboard
+from ocr_utils import read_plate_image
 
 
 class App(tk.Tk):
@@ -529,7 +530,12 @@ class App(tk.Tk):
             return
 
         existing = self._violation_data.get(iid, {})
-        existing.update({k: value for k, value in v.items() if value not in (None, "")})
+        for key, value in v.items():
+            if value in (None, ""):
+                continue
+            if key == "plate" and self._has_plate_text(existing.get("plate")) and not self._has_plate_text(value):
+                continue
+            existing[key] = value
         self._violation_data[iid] = existing
 
         current_values = list(self.tree.item(iid, "values"))
@@ -655,6 +661,8 @@ class App(tk.Tk):
     # Detail popup
 
     def _show_detail_popup(self, v):
+        plate_text, plate_conf = self._ensure_final_plate_ocr(v)
+
         win = tk.Toplevel(self)
         win.title(f"Violation - {v.get('type', '')}")
         win.geometry("520x420")
@@ -695,7 +703,32 @@ class App(tk.Tk):
                  font=("Segoe UI", 11, "bold"), fg="#333").pack(anchor="w", pady=2)
         tk.Label(info, text=f"Time:  {v.get('timestamp', '-')}", bg="#f4f4f4",
                  font=("Segoe UI", 10), fg="#555").pack(anchor="w", pady=1)
+        tk.Label(info, text=f"Plate OCR:  {plate_text}", bg="#f4f4f4",
+                 font=("Segoe UI", 10), fg="#555").pack(anchor="w", pady=1)
+        if plate_conf:
+            tk.Label(info, text=f"OCR confidence:  {plate_conf:.2f}", bg="#f4f4f4",
+                     font=("Segoe UI", 10), fg="#555").pack(anchor="w", pady=1)
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=(12, 10))
+
+    def _ensure_final_plate_ocr(self, v):
+        plate_path = v.get("plate_img")
+        current_plate = v.get("plate")
+
+        if v.get("ocr_source") == plate_path and self._has_plate_text(current_plate):
+            return current_plate, v.get("ocr_conf", 0.0)
+
+        text, conf = read_plate_image(plate_path)
+        if not self._has_plate_text(text) and self._has_plate_text(current_plate):
+            text = current_plate
+            conf = v.get("ocr_conf", 0.0)
+        v["plate"] = text
+        v["ocr_conf"] = conf
+        v["ocr_source"] = plate_path
+        self._update_sqlite_violation(v)
+        return text, conf
+
+    def _has_plate_text(self, value):
+        return value not in ("", "-", "UNKNOWN", "Unknown", None)
 
     def _load_plate_thumb(self, path):
         if not path or not os.path.exists(path):

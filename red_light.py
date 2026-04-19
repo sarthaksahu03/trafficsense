@@ -20,6 +20,54 @@ def clean_text(text):
 def is_valid_plate(text):
     return len(text) >= 5
 
+def read_plate_text_from_crop(reader, plate_crop, min_conf=0.4):
+    if plate_crop is None or plate_crop.size == 0:
+        return "UNKNOWN", 0.0
+
+    gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+    if cv2.Laplacian(gray, cv2.CV_64F).var() < 35:
+        return "UNKNOWN", 0.0
+
+    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    candidates = [gray]
+    _, thresholded = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    candidates.append(thresholded)
+
+    best_text = "UNKNOWN"
+    best_conf = 0.0
+
+    for candidate in candidates:
+        ocr_results = reader.readtext(candidate, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+
+        parts = []
+        for bbox, text, conf in ocr_results:
+            cleaned = clean_text(text)
+            if not cleaned or conf < min_conf:
+                continue
+
+            ys = [point[1] for point in bbox]
+            xs = [point[0] for point in bbox]
+            parts.append((min(ys), min(xs), cleaned, conf))
+
+        if not parts:
+            continue
+
+        parts.sort(key=lambda item: (item[0], item[1]))
+        combined_text = clean_text("".join(part[2] for part in parts))
+        combined_conf = sum(part[3] for part in parts) / len(parts)
+        if is_valid_plate(combined_text) and combined_conf > best_conf:
+            best_text = combined_text
+            best_conf = combined_conf
+
+        for _, _, text, conf in parts:
+            if is_valid_plate(text) and conf > best_conf:
+                best_text = text
+                best_conf = conf
+
+    return best_text, best_conf
+
 def ccw(A, B, C):
     return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
 
@@ -71,44 +119,104 @@ class PlateReader:
         print("Initializing PlateReader...")
         self.plate_model = YOLO(model_path)
         self.reader = easyocr.Reader(['en'], gpu=False)
+
+    def plate_crop_quality(self, plate_crop, detection_conf=0.0):
+        if plate_crop is None or plate_crop.size == 0:
+            return 0.0
+
+        h, w = plate_crop.shape[:2]
+        if w < 30 or h < 10:
+            return 0.0
+
+        gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+        contrast = float(gray.std())
+        area_factor = min((w * h) / 3000.0, 2.5)
+        return (sharpness + contrast * 2.0) * max(area_factor, 0.5) * (1.0 + detection_conf)
+
+    def plate_position_score(self, box, crop_w, crop_h):
+        x1, y1, x2, y2 = box
+        box_w = max(0, x2 - x1)
+        box_h = max(0, y2 - y1)
+        if box_w == 0 or box_h == 0 or crop_w == 0 or crop_h == 0:
+            return 0.0, None
+
+        aspect_ratio = box_w / box_h
+        if aspect_ratio < 0.7 or aspect_ratio > 8.0:
+            return 0.0, None
+
+        rel_cx = ((x1 + x2) / 2) / crop_w
+        rel_cy = ((y1 + y2) / 2) / crop_h
+        if rel_cx < 0.08 or rel_cx > 0.92 or rel_cy < 0.30 or rel_cy > 0.98:
+            return 0.0, None
+
+        center_score = 1.0 - min(abs(rel_cx - 0.5) / 0.5, 1.0) * 0.35
+        vertical_score = 0.75 + min(max(rel_cy, 0.0), 1.0) * 0.25
+        return center_score * vertical_score, (rel_cx, rel_cy)
+
+    def is_same_plate_position(self, old_position, new_position, max_distance=0.30):
+        if old_position is None or new_position is None:
+            return old_position is None
+
+        dx = old_position[0] - new_position[0]
+        dy = old_position[1] - new_position[1]
+        return (dx * dx + dy * dy) ** 0.5 <= max_distance
+
+    def has_known_plate_text(self, plate_text):
+        return plate_text not in ("", "-", "UNKNOWN", "Unknown", None)
         
     def read_plate(self, vehicle_crop):
         plate_text_disp = "UNKNOWN"
         best_conf = 0.0
+        best_quality = 0.0
+        best_position = None
         
         plate_results = self.plate_model(vehicle_crop, conf=0.25, imgsz=640, verbose=False, device='cpu')
         
         best_plate_crop = None
         for r in plate_results:
             for box in r.boxes:
-                px1, py1, px2, py2 = map(int, box.xyxy[0])
+                raw_x1, raw_y1, raw_x2, raw_y2 = map(int, box.xyxy[0])
+                box_w = max(0, raw_x2 - raw_x1)
+                box_h = max(0, raw_y2 - raw_y1)
+                if box_w == 0 or box_h == 0:
+                    continue
+
+                pad_x = max(2, int(box_w * 0.08))
+                pad_y = max(3, int(box_h * 0.25))
+                px1 = max(0, raw_x1 - pad_x)
+                py1 = max(0, raw_y1 - pad_y)
+                px2 = min(vehicle_crop.shape[1], raw_x2 + pad_x)
+                py2 = min(vehicle_crop.shape[0], raw_y2 + pad_y)
                 plate_crop = vehicle_crop[py1:py2, px1:px2]
                 
                 if plate_crop.size > 0:
                     h, w = plate_crop.shape[:2]
                     if w < 30 or h < 10:
                         continue
-                        
-                    gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
-                    
-                    # Skip OCR on weak plate crops
-                    if cv2.Laplacian(gray, cv2.CV_64F).var() < 50:
+
+                    detection_conf = float(box.conf[0]) if box.conf is not None else 0.0
+                    position_score, position = self.plate_position_score(
+                        (raw_x1, raw_y1, raw_x2, raw_y2),
+                        vehicle_crop.shape[1],
+                        vehicle_crop.shape[0]
+                    )
+                    if position_score == 0.0:
                         continue
 
-                    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-                    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-                    _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                    
-                    ocr_results = self.reader.readtext(gray, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
-                    
-                    for (_, text, conf) in ocr_results:
-                        cleaned = clean_text(text)
-                        # Keep the strongest plate read seen so far
-                        if is_valid_plate(cleaned) and conf > 0.4 and conf > best_conf:
-                            best_conf = conf
-                            plate_text_disp = cleaned
-                            best_plate_crop = plate_crop.copy()
-        return plate_text_disp, best_plate_crop, best_conf
+                    quality = self.plate_crop_quality(plate_crop, detection_conf) * position_score
+                    if quality > best_quality:
+                        best_quality = quality
+                        best_plate_crop = plate_crop.copy()
+                        best_position = position
+                        
+                    plate_text, conf = read_plate_text_from_crop(self.reader, plate_crop, min_conf=0.4)
+                    if conf > best_conf:
+                        best_conf = conf
+                        plate_text_disp = plate_text
+                        best_plate_crop = plate_crop.copy()
+                        best_position = position
+        return plate_text_disp, best_plate_crop, best_conf, best_position
 
 class RedLightSystem:
     def __init__(self, video_path, output_dir, stop_line_pts, traffic_light_roi):
@@ -147,7 +255,11 @@ class RedLightSystem:
             return
 
         fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0: fps = 30
+        if fps == 0 or np.isnan(fps):
+            fps = 30
+        fps = float(fps)
+        evidence_window_frames = max(1, int(fps * 1.5))
+        evidence_interval_frames = max(1, int(fps * 0.10))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -210,22 +322,50 @@ class RedLightSystem:
                         
                         # Try again later if the saved plate read is still weak
                         v_info = self.violated_records[track_id]
-                        if v_info.get("conf", 0.0) < 0.8:
+                        violation_frame = v_info.get("violation_frame", frame_count)
+                        last_evidence_frame = v_info.get("last_evidence_frame", -evidence_interval_frames)
+                        should_update_evidence = (
+                            v_info.get("conf", 0.0) < 0.8
+                            and frame_count - violation_frame <= evidence_window_frames
+                            and frame_count - last_evidence_frame >= evidence_interval_frames
+                        )
+
+                        if should_update_evidence:
                             vehicle_crop = frame[max(0, y1):min(height, y2), max(0, x1):min(width, x2)]
-                            plate_text, plate_crop, conf = self.plate_reader.read_plate(vehicle_crop)
+                            plate_text, plate_crop, conf, plate_position = self.plate_reader.read_plate(vehicle_crop)
+                            v_info["last_evidence_frame"] = frame_count
                             
-                            if conf > v_info.get("conf", 0.0):
+                            existing_plate = v_info.get("plate")
+                            has_known_existing_plate = self.plate_reader.has_known_plate_text(existing_plate)
+                            has_same_plate_text = (
+                                not has_known_existing_plate
+                                or not self.plate_reader.has_known_plate_text(plate_text)
+                                or plate_text == existing_plate
+                            )
+                            has_better_text = (
+                                conf > v_info.get("conf", 0.0)
+                                and has_same_plate_text
+                                and self.plate_reader.has_known_plate_text(plate_text)
+                            )
+                            has_first_plate_image = plate_crop is not None and not v_info.get("plate_img")
+                            has_same_plate_position = self.plate_reader.is_same_plate_position(
+                                v_info.get("plate_position"),
+                                plate_position
+                            )
+                            if (has_better_text or has_first_plate_image) and has_same_plate_position:
                                 veh_path, plate_path = save_violation_crops(output_dir_violation, track_id, plate_text, vehicle_crop, plate_crop)
                                 
                                 # Update the cached record in place so the UI sees the better evidence
-                                v_info["plate"] = plate_text
+                                if has_better_text:
+                                    v_info["plate"] = plate_text
                                 v_info["vehicle_img"] = veh_path
                                 v_info["plate_img"] = plate_path
-                                v_info["conf"] = conf
+                                v_info["conf"] = max(v_info.get("conf", 0.0), conf)
+                                v_info["plate_position"] = plate_position or v_info.get("plate_position")
                                 
                                 # Persist the improved plate and image paths
-                                self.logger.update_violation(track_id, plate_text, veh_path, plate_path)
-                                print(f"Upgraded evidence for ID: {track_id}, new plate: {plate_text}")
+                                self.logger.update_violation(track_id, v_info["plate"], veh_path, plate_path)
+                                print(f"Upgraded evidence for ID: {track_id}, new plate: {v_info['plate']}")
                                 
                     elif crossed and light_state == "RED" and track_id not in self.violated_records:
                         color = (0, 0, 255)
@@ -233,7 +373,7 @@ class RedLightSystem:
                         print(f"Violation detected! ID: {track_id}")
                         
                         vehicle_crop = frame[max(0, y1):min(height, y2), max(0, x1):min(width, x2)]
-                        plate_text, plate_crop, conf = self.plate_reader.read_plate(vehicle_crop)
+                        plate_text, plate_crop, conf, plate_position = self.plate_reader.read_plate(vehicle_crop)
                         
                         veh_path, plate_path = save_violation_crops(output_dir_violation, track_id, plate_text, vehicle_crop, plate_crop)
                         
@@ -247,6 +387,9 @@ class RedLightSystem:
                         
                         if violation_info:
                             violation_info["conf"] = conf
+                            violation_info["plate_position"] = plate_position
+                            violation_info["violation_frame"] = frame_count
+                            violation_info["last_evidence_frame"] = frame_count
                             self.violated_records[track_id] = violation_info
                             new_violations.append(violation_info)
 

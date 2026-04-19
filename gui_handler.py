@@ -1,5 +1,6 @@
 import customtkinter as ctk
 from image_utils import load_image_for_gui
+from ocr_utils import read_plate_image
 
 class ViolationDashboard(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
@@ -66,7 +67,12 @@ class ViolationDashboard(ctk.CTkFrame):
             self.add_violation_row(v_data)
             return
 
-        existing.update({k: value for k, value in v_data.items() if value not in (None, "")})
+        for key, value in v_data.items():
+            if value in (None, ""):
+                continue
+            if key == "plate" and self._has_plate_text(existing.get("plate")) and not self._has_plate_text(value):
+                continue
+            existing[key] = value
         widgets = self.row_widgets_by_vehicle_id.get(vehicle_id, {})
         plate_lbl = widgets.get("plate")
         plate_ctk = load_image_for_gui(existing.get("plate_img"), size=(140, 58))
@@ -75,6 +81,8 @@ class ViolationDashboard(ctk.CTkFrame):
             plate_lbl.image = plate_ctk
 
     def show_details_modal(self, v_data):
+        plate_text, plate_conf = self._ensure_final_plate_ocr(v_data)
+
         modal = ctk.CTkToplevel(self)
         modal.title(f"Violation Details - #{v_data.get('s_no')}")
         modal.geometry("600x550")
@@ -111,5 +119,28 @@ class ViolationDashboard(ctk.CTkFrame):
         
         ctk.CTkLabel(info_frame, text=f"Violation Type: {v_data.get('type')}", font=("Arial", 16, "bold")).pack(pady=5)
         ctk.CTkLabel(info_frame, text=f"Timestamp: {v_data.get('timestamp')}", font=("Arial", 14)).pack(pady=5)
+        ctk.CTkLabel(info_frame, text=f"Plate OCR: {plate_text}", font=("Arial", 14)).pack(pady=5)
+        if plate_conf:
+            ctk.CTkLabel(info_frame, text=f"OCR Confidence: {plate_conf:.2f}", font=("Arial", 14)).pack(pady=5)
         close_btn = ctk.CTkButton(modal, text="Close", command=modal.destroy, fg_color="red", hover_color="#8b0000")
         close_btn.grid(row=2, column=0, columnspan=2, pady=20)
+
+    def _ensure_final_plate_ocr(self, v_data):
+        unknown_values = {"", "-", "UNKNOWN", "Unknown", None}
+        plate_path = v_data.get("plate_img")
+        current_plate = v_data.get("plate")
+
+        if v_data.get("ocr_source") == plate_path and current_plate not in unknown_values:
+            return current_plate, v_data.get("ocr_conf", 0.0)
+
+        text, conf = read_plate_image(plate_path)
+        if text in unknown_values and current_plate not in unknown_values:
+            text = current_plate
+            conf = v_data.get("ocr_conf", 0.0)
+        v_data["plate"] = text
+        v_data["ocr_conf"] = conf
+        v_data["ocr_source"] = plate_path
+        return text, conf
+
+    def _has_plate_text(self, value):
+        return value not in ("", "-", "UNKNOWN", "Unknown", None)

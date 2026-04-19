@@ -146,8 +146,8 @@ def generate_dataset(video_path, output_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synthetic Traffic Light Dataset Generator")
-    parser.add_argument("--input", "-i", type=str, default="/home/burner/coding/yolo_test/sample_input/14326971_2560_1440_60fps.mp4", help="Input video file path")
-    parser.add_argument("--output", "-o", type=str, default="output_with_signal_2.mp4", help="Output video file path")
+    parser.add_argument("--input", "-i", type=str, default="/home/burner/coding/yolo_test/sample_input/8321860-hd_1920_1080_30fps.mp4", help="Input video file path")
+    parser.add_argument("--output", "-o", type=str, default="output_with_signal_4.mp4", help="Output video file path")
     
     args = parser.parse_args()
     generate_dataset(args.input, args.output)
